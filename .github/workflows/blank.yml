@@ -1,0 +1,85 @@
+
+name: PC Virtual - Windows + Tailscale
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-pc:
+    runs-on: windows-latest
+    timeout-minutes: 330
+
+    steps:
+      - name: Preparar Windows
+        shell: pwsh
+        run: |
+          Write-Host "Preparando ambiente Windows..."
+          Get-ComputerInfo |
+            Select-Object WindowsProductName,
+                          WindowsVersion,
+                          CsNumberOfLogicalProcessors,
+                          CsTotalPhysicalMemory
+
+      - name: Instalar Tailscale
+        shell: pwsh
+        run: |
+          $url = "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi"
+          $installer = Join-Path $env:TEMP "tailscale.msi"
+
+          Invoke-WebRequest -Uri $url -OutFile $installer
+          $process = Start-Process msiexec.exe `
+            -ArgumentList "/i", $installer, "/quiet", "/norestart" `
+            -Wait -PassThru
+
+          if ($process.ExitCode -notin @(0, 3010)) {
+            throw "Falha ao instalar Tailscale."
+          }
+
+      - name: Conectar à rede privada
+        shell: pwsh
+        env:
+          TS_AUTHKEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:TS_AUTHKEY)) {
+            throw "Configure o segredo TAILSCALE_AUTH_KEY no GitHub."
+          }
+
+          $ts = "$env:ProgramFiles\Tailscale\tailscale.exe"
+
+          & $ts up "--authkey=$env:TS_AUTHKEY" `
+            "--hostname=github-windows-$env:GITHUB_RUN_ID"
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Não foi possível conectar ao Tailscale."
+          }
+
+          $ip = & $ts ip -4
+          if (-not $ip) {
+            throw "O Tailscale não forneceu um endereço IP."
+          }
+
+          "TAILSCALE_IP=$ip" >> $env:GITHUB_ENV
+          "IP privado: $ip"
+
+      - name: Verificar recursos gráficos
+        shell: pwsh
+        run: |
+          Write-Host "Adaptadores gráficos detectados:"
+          Get-CimInstance Win32_VideoController |
+            Select-Object Name, DriverVersion,
+                          AdapterRAM, VideoModeDescription |
+            Format-List
+
+          Write-Host "Ambiente pronto para diagnóstico."
+          Write-Host "Este executor não garante GPU dedicada."
+
+      - name: Resumo
+        if: always()
+        shell: pwsh
+        run: |
+          Write-Host "Execução: $env:GITHUB_RUN_ID"
+          Write-Host "O executor é temporário."
+          
